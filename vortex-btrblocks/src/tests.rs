@@ -7,6 +7,7 @@
 //! generic selection algorithm are tested in their owning crates.
 
 use std::iter;
+use std::sync::Arc;
 
 use rand::Rng;
 use rand::SeedableRng;
@@ -26,6 +27,7 @@ use vortex_array::arrays::FixedSizeListArray;
 use vortex_array::arrays::ListArray;
 use vortex_array::arrays::ListViewArray;
 use vortex_array::arrays::PrimitiveArray;
+use vortex_array::arrays::RunEnd;
 use vortex_array::arrays::StructArray;
 use vortex_array::arrays::TemporalArray;
 use vortex_array::arrays::VarBinViewArray;
@@ -55,8 +57,13 @@ use vortex_sparse::Sparse;
 
 use crate::BtrBlocksCompressor;
 use crate::BtrBlocksCompressorBuilder;
+use crate::ChildDecision;
+use crate::ChildPolicy;
+use crate::ChildRequest;
 use crate::SESSION;
 use crate::schemes::boolean::BoolRunEndScheme;
+use crate::schemes::integer::BitPackingScheme;
+use crate::schemes::integer::RunEndScheme;
 
 #[track_caller]
 fn assert_roundtrip(compressor: &BtrBlocksCompressor, input: &ArrayRef) -> VortexResult<ArrayRef> {
@@ -353,5 +360,40 @@ fn test_cuda_binary_zstd_follows_editions(
     let compressed = assert_roundtrip(&compressor, &input)?;
     assert_eq!(compressed.encoding_id(), expected);
 
+    Ok(())
+}
+
+static BITPACKING_V1: BitPackingScheme = BitPackingScheme::v1();
+
+/// Keeps every child a scheme registers.
+#[derive(Debug)]
+struct KeepEverything;
+
+impl ChildPolicy for KeepEverything {
+    fn decide(&self, _request: &ChildRequest<'_>) -> ChildDecision {
+        ChildDecision::Keep
+    }
+}
+
+#[rstest]
+#[case::schemes_decide(false)]
+#[case::policy_keeps(true)]
+fn test_child_policy_overrides_schemes(#[case] keep: bool) -> VortexResult<()> {
+    let input = PrimitiveArray::from_iter((0..1_000_000).map(|i| i / 100)).into_array();
+    let mut builder = BtrBlocksCompressorBuilder::empty()
+        .with_new_scheme(&RunEndScheme)
+        .with_new_scheme(&BITPACKING_V1);
+    if keep {
+        builder = builder.with_child_policy(Arc::new(KeepEverything));
+    }
+    let compressed = assert_roundtrip(&builder.build(), &input)?;
+
+    assert!(compressed.is::<RunEnd>(), "{}", compressed.encoding_id());
+    let children_canonical = compressed
+        .slots()
+        .iter()
+        .flatten()
+        .all(ArrayRef::is_canonical);
+    assert_eq!(children_canonical, keep);
     Ok(())
 }
