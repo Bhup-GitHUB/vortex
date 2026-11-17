@@ -1,0 +1,66 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright the Vortex contributors
+
+# Encodings of TPC-H lineitem (SF 0.1) as written by `data-gen`.
+#
+# Run `vx filecheck slt/tpch/data/lineitem.vortex` to print the dump these directives match.
+# Directives match partially and in order, like LLVM FileCheck. Each `units: <glob>` line
+# applies the directives below it to every unit (column chunk) whose path matches the glob.
+
+# Free text is FSST in every chunk, with bit-packed lengths and offsets.
+units: l_comment/data[*]
+check: root: vortex.fsst(utf8
+nextln: uncompressed_lengths: fastlanes.bitpacked
+nextln: codes_offsets: fastlanes.bitpacked
+
+# Low-cardinality strings get a dictionary layout with bit-packed codes. The values are FSST,
+# except l_shipinstruct's four values, which stay uncompressed.
+units: l_returnflag/data/values
+check: root: vortex.fsst(utf8
+
+units: l_linestatus/data/values
+check: root: vortex.fsst(utf8
+
+units: l_shipmode/data/values
+check: root: vortex.fsst(utf8
+
+units: l_shipinstruct/data/values
+check: root: vortex.varbinview(utf8
+
+units: l_*/data/codes[*]
+check: root: fastlanes.bitpacked
+
+# Dates are frame-of-reference then bit-packed, under the date extension type.
+units: l_*date/data[*]
+check: root: vortex.ext(vortex.date[days]
+nextln: storage: fastlanes.for
+nextln: encoded: fastlanes.bitpacked
+
+# Decimals are split into byte parts, and the most significant part is bit-packed...
+units: l_extendedprice/data[*]
+check: root: vortex.decimal_byte_parts.v2(decimal(15,2)
+nextln: msp: fastlanes.bitpacked
+
+units: l_discount/data[*]
+check: root: vortex.decimal_byte_parts.v2(decimal(15,2)
+nextln: msp: fastlanes.bitpacked
+
+units: l_tax/data[*]
+check: root: vortex.decimal_byte_parts.v2(decimal(15,2)
+nextln: msp: fastlanes.bitpacked
+
+# ...except l_quantity, whose 50 distinct values are dictionary-encoded.
+units: l_quantity/data[*]
+check: root: vortex.decimal_byte_parts.v2(decimal(15,2)
+nextln: msp: vortex.dict(
+nextln: codes: fastlanes.bitpacked
+
+# Keys are compressed in every chunk. l_orderkey mixes run-end, frame-of-reference and plain
+# bit-packing across chunks, so only rule out an uncompressed root.
+units: l_*key/data[*]
+not: root: vortex.primitive
+
+# Every column has a zone map of min/max-style statistics and a constant null count.
+units: */zones
+check: root: vortex.struct(
+check: vortex.null_count(): vortex.constant
