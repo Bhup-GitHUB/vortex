@@ -12473,6 +12473,7 @@ dependencies = [
  "vortex",
  "vortex-datafusion",
  "vortex-duckdb",
+ "vortex-tui",
 ]
 
 [[package]]

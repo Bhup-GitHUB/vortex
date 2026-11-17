@@ -7,6 +7,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 use std::sync::LazyLock;
 
+use anyhow::Context as _;
 use datafusion::common::GetExt;
 use datafusion::datasource::provider::DefaultTableFactory;
 use datafusion::execution::SessionStateBuilder;
@@ -35,6 +36,10 @@ use vortex_sqllogictest::scratch::WorkDirGuard;
 use vortex_sqllogictest::scratch::reset_dir;
 use vortex_sqllogictest::scratch::work_dir_for;
 use vortex_sqllogictest::utils::list_files;
+use vortex_sqllogictest::utils::list_files_with_extension;
+use vortex_tui::filecheck::DumpOptions;
+use vortex_tui::filecheck::check_vortex_file;
+use vortex_tui::filecheck::format_report;
 
 static SLT_ROOT: LazyLock<PathBuf> = LazyLock::new(|| {
     let crate_path = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -129,6 +134,42 @@ fn drive_duckdb(path: &Path, work_dir: &Path, mode: Mode) -> anyhow::Result<()> 
 
         run_or_complete(&mut runner, path, mode, duckdb_validator).await
     })
+}
+
+/// Checks the encoding trees of a generated Vortex table against a `vx filecheck` file.
+///
+/// The check file `<suite>/filecheck/<table>.check` covers the table
+/// `<suite>/data/<table>.vortex` written by the suite's `generate_data.sh`.
+fn drive_filecheck(check_path: &Path) -> anyhow::Result<()> {
+    let table = check_path
+        .file_stem()
+        .context("check file has no name")?
+        .to_string_lossy();
+    let suite_dir = check_path
+        .parent()
+        .and_then(Path::parent)
+        .context("check file must be in <suite>/filecheck/")?;
+    let vortex_path = suite_dir.join("data").join(format!("{table}.vortex"));
+    let check_text = std::fs::read_to_string(check_path)?;
+
+    let outcomes = build_runtime()?.block_on(check_vortex_file(
+        &VortexSession::default(),
+        &vortex_path,
+        &check_text,
+        DumpOptions::default(),
+        &[],
+    ))?;
+    let failed = outcomes.iter().filter(|outcome| !outcome.passed()).count();
+    anyhow::ensure!(
+        failed == 0,
+        "{failed} of {} check sections failed for {}. Run `vx filecheck {} {}` to reproduce.\n{}",
+        outcomes.len(),
+        vortex_path.display(),
+        vortex_path.display(),
+        check_path.display(),
+        format_report(&outcomes, false),
+    );
+    Ok(())
 }
 
 /// Either validates `path` or rewrites its expected output, depending on `mode`.
@@ -282,6 +323,25 @@ fn main() -> anyhow::Result<ExitCode> {
                 .with_ignored_flag(ignored),
             );
         }
+    }
+
+    // Encoding checks of generated tables. `--complete` leaves them alone: they
+    // are written by hand, like FileCheck tests.
+    let mut check_files = list_files_with_extension(SLT_ROOT.as_path(), "check")?;
+    check_files.sort();
+    for path in check_files {
+        let ignored = missing_generated_data(&path);
+        let name = path
+            .strip_prefix(SLT_ROOT.as_path())
+            .unwrap_or(&path)
+            .display()
+            .to_string();
+        trials.push(
+            Trial::test(format!("slt::filecheck::{name}"), move || {
+                drive_filecheck(&path).map_err(|e| Failed::from(format!("{e:#}")))
+            })
+            .with_ignored_flag(ignored),
+        );
     }
 
     Ok(sqllogictest::harness::run(&args, trials).exit_code())

@@ -38,6 +38,27 @@ in query result.
 
 To regenerate .slt file to match current output, use `--complete`.
 
+## Encoding checks
+
+`slt/<suite>/filecheck/<table>.check` checks the array encodings of the generated
+`slt/<suite>/data/<table>.vortex` with `vx filecheck`, so a compressor change that
+re-encodes benchmark data fails here instead of only showing up as a benchmark swing.
+The directives match the file's encoding-tree dump partially, like LLVM FileCheck, and
+`units: <glob>` applies the directives that follow it to every matching column chunk.
+See the `vortex_tui::filecheck` module docs for the format.
+
+```sh
+# Print the dump a check file is matched against
+cargo run -p vortex-tui --bin vx -- filecheck slt/tpch/data/lineitem.vortex
+# Reproduce a failing check with full match explanations
+cargo run -p vortex-tui --bin vx -- filecheck slt/tpch/data/lineitem.vortex \
+  slt/tpch/filecheck/lineitem.check --explain
+# Run only the encoding checks
+cargo nextest run -p vortex-sqllogictest -E 'test(/slt::filecheck::/)'
+```
+
+Check files are written by hand; `--complete` does not rewrite them.
+
 ```sh
 cargo test -p vortex-sqllogictest --test sqllogictests -- --complete
 # Regenerate output for a specific test

@@ -35,6 +35,7 @@
 //! In globs, `*` matches any run of characters (including `/`), `?` matches one character, and
 //! everything else, including `[` and `]`, matches literally.
 
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -221,13 +222,7 @@ pub async fn exec_filecheck(session: &VortexSession, args: FilecheckArgs) -> any
         .iter()
         .map(|pattern| Glob::new(pattern))
         .collect::<anyhow::Result<Vec<_>>>()?;
-
-    let file = session.open_options().open_path(&args.file).await?;
-    let units: Vec<Unit> = collect_units(session, &file, options)
-        .await?
-        .into_iter()
-        .filter(|unit| !excludes.iter().any(|glob| glob.matches(&unit.path)))
-        .collect();
+    let units = load_units(session, &args.file, options, &excludes).await?;
 
     let Some(checks_path) = args.checks else {
         for unit in &units {
@@ -239,48 +234,97 @@ pub async fn exec_filecheck(session: &VortexSession, args: FilecheckArgs) -> any
     let check_text = std::fs::read_to_string(&checks_path)
         .with_context(|| format!("reading check file {}", checks_path.display()))?;
     let outcomes = run_checks(&units, &parse_check_file(&check_text)?)?;
+    print!("{}", format_report(&outcomes, args.explain));
 
-    let mut failed_sections = 0;
-    for outcome in &outcomes {
-        if outcome.passed() {
-            println!("PASS {}: {} checked", outcome.label, outcome.checked);
-            continue;
-        }
-        failed_sections += 1;
-        if outcome.checked == 0 {
-            println!("FAIL {}: matched no units", outcome.label);
-            continue;
-        }
-        println!(
-            "FAIL {}: {}/{} failed",
-            outcome.label,
-            outcome.failures.len(),
-            outcome.checked
-        );
-        for failure in outcome.failures.iter().take(MAX_REPORTED_FAILURES) {
-            if let Some(unit) = &failure.unit {
-                println!("  unit {unit}:");
-            }
-            print_explanation(&failure.explanation, args.explain);
-        }
-        if outcome.failures.len() > MAX_REPORTED_FAILURES {
-            println!(
-                "  ... and {} more failing units",
-                outcome.failures.len() - MAX_REPORTED_FAILURES
-            );
-        }
-    }
-
-    if failed_sections > 0 {
-        bail!(
-            "{failed_sections} of {} check sections failed",
-            outcomes.len()
-        );
+    let failed = outcomes.iter().filter(|outcome| !outcome.passed()).count();
+    if failed > 0 {
+        bail!("{failed} of {} check sections failed", outcomes.len());
     }
     Ok(())
 }
 
-fn print_explanation(explanation: &str, full: bool) {
+/// Check the Vortex file at `path` against the directives in `check_text`.
+///
+/// Call [`SectionOutcome::passed`] on each outcome, or [`format_report`] to describe them.
+///
+/// # Errors
+///
+/// Returns an error if the file cannot be read or the check text is malformed. Failing checks
+/// are reported in the outcomes, not as an error.
+pub async fn check_vortex_file(
+    session: &VortexSession,
+    path: &Path,
+    check_text: &str,
+    options: DumpOptions,
+    excludes: &[Glob],
+) -> anyhow::Result<Vec<SectionOutcome>> {
+    let units = load_units(session, path, options, excludes).await?;
+    run_checks(&units, &parse_check_file(check_text)?)
+}
+
+/// Open the Vortex file at `path` and collect its units, minus those matching `excludes`.
+///
+/// # Errors
+///
+/// Returns an error if the file cannot be opened or a segment cannot be decoded.
+pub async fn load_units(
+    session: &VortexSession,
+    path: &Path,
+    options: DumpOptions,
+    excludes: &[Glob],
+) -> anyhow::Result<Vec<Unit>> {
+    let file = session
+        .open_options()
+        .open_path(path)
+        .await
+        .with_context(|| format!("opening {}", path.display()))?;
+    Ok(collect_units(session, &file, options)
+        .await?
+        .into_iter()
+        .filter(|unit| !excludes.iter().any(|glob| glob.matches(&unit.path)))
+        .collect())
+}
+
+/// Describe check outcomes as one `PASS` or `FAIL` line per section, followed by the match
+/// explanations of up to five failing units. Without `explain`, each explanation is cut to its
+/// last lines.
+pub fn format_report(outcomes: &[SectionOutcome], explain: bool) -> String {
+    let mut out = String::new();
+    for outcome in outcomes {
+        if outcome.passed() {
+            out.push_str(&format!(
+                "PASS {}: {} checked\n",
+                outcome.label, outcome.checked
+            ));
+            continue;
+        }
+        if outcome.checked == 0 {
+            out.push_str(&format!("FAIL {}: matched no units\n", outcome.label));
+            continue;
+        }
+        out.push_str(&format!(
+            "FAIL {}: {}/{} failed\n",
+            outcome.label,
+            outcome.failures.len(),
+            outcome.checked
+        ));
+        for failure in outcome.failures.iter().take(MAX_REPORTED_FAILURES) {
+            if let Some(unit) = &failure.unit {
+                out.push_str(&format!("  unit {unit}:\n"));
+            }
+            push_explanation(&mut out, &failure.explanation, explain);
+        }
+        if outcome.failures.len() > MAX_REPORTED_FAILURES {
+            out.push_str(&format!(
+                "  ... and {} more failing units\n",
+                outcome.failures.len() - MAX_REPORTED_FAILURES
+            ));
+        }
+    }
+    out
+}
+
+fn push_explanation(out: &mut String, explanation: &str, full: bool) {
     let lines: Vec<&str> = explanation.lines().collect();
     let start = if full {
         0
@@ -288,10 +332,12 @@ fn print_explanation(explanation: &str, full: bool) {
         lines.len().saturating_sub(EXPLAIN_TAIL_LINES)
     };
     if start > 0 {
-        println!("    ... ({start} lines omitted, pass --explain for all)");
+        out.push_str(&format!(
+            "    ... ({start} lines omitted, pass --explain for all)\n"
+        ));
     }
     for line in &lines[start..] {
-        println!("    {line}");
+        out.push_str(&format!("    {line}\n"));
     }
 }
 
