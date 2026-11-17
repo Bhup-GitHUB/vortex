@@ -4437,6 +4437,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "filecheck"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2fe00b427b7c4835f8b82170eb7b9a63634376b63d73b9a9093367e82570bbaa"
+dependencies = [
+ "regex",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "filetime"
 version = "0.2.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -12512,6 +12522,7 @@ dependencies = [
  "crossterm",
  "datafusion 55.2.0",
  "env_logger",
+ "filecheck",
  "flatbuffers",
  "futures",
  "fuzzy-matcher",
@@ -12521,6 +12532,7 @@ dependencies = [
  "parquet 59.3.2",
  "ratatui",
  "ratzilla",
+ "regex",
  "serde",
  "serde_json",
  "taffy",

@@ -20,8 +20,10 @@ native = [
     "dep:crossterm",
     "dep:datafusion",
     "dep:env_logger",
+    "dep:filecheck",
     "dep:indicatif",
     "dep:parquet",
+    "dep:regex",
     "dep:tokio",
     "dep:vortex-datafusion",
     "ratatui/crossterm",
@@ -64,8 +66,10 @@ clap = { workspace = true, features = ["derive"], optional = true }
 crossterm = { workspace = true, features = ["event-stream"], optional = true }
 datafusion = { workspace = true, optional = true }
 env_logger = { workspace = true, optional = true }
+filecheck = { workspace = true, optional = true }
 indicatif = { workspace = true, features = ["futures"], optional = true }
 parquet = { workspace = true, features = ["arrow", "async"], optional = true }
+regex = { workspace = true, optional = true }
 tokio = { workspace = true, features = [
     "rt-multi-thread",
     "macros",
